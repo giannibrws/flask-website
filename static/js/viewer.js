@@ -1,165 +1,179 @@
 // Painting viewer: zoom, pan, loupe, fullscreen and keyboard tour navigation.
-(function () {
-  "use strict";
+const MIN = 1;
+const MAX = 6;
+const LOUPE_ZOOM = 3;
+const $ = (id) => document.getElementById(id);
 
-  var stage = document.getElementById("stage");
-  var frame = document.getElementById("frame");
-  var img = document.getElementById("painting");
-  var loupe = document.getElementById("loupe");
-  var loupeBtn = document.getElementById("loupe-toggle");
-  var levelOut = document.getElementById("zoom-level");
-  if (!stage || !frame || !img) return;
+class PaintingViewer {
+  scale = 1;
+  x = 0;
+  y = 0;
+  loupeOn = false;
+  #drag = null;
 
-  var viewer = document.getElementById("viewer");
-  var MIN = 1, MAX = 6, LOUPE_ZOOM = 3;
+  constructor() {
+    this.viewer = $("viewer");
+    this.stage = $("stage");
+    this.frame = $("frame");
+    this.img = $("painting");
+    this.loupe = $("loupe");
+    this.loupeBtn = $("loupe-toggle");
+    this.level = $("zoom-level");
 
-  // while a jigsaw puzzle is running, the viewer stays out of the way
-  function puzzling() { return viewer.classList.contains("is-puzzle"); }
-  var scale = 1, x = 0, y = 0;
-  var loupeOn = false;
+    this.#watchImage();
+    this.#bind();
+    this.render();
+  }
 
-  function clampPan() {
+  /** While a jigsaw puzzle is running, the viewer stays out of the way. */
+  get puzzling() { return this.viewer.classList.contains("is-puzzle"); }
+
+  render(animate = false) {
     // keep the painting from being dragged fully out of view
-    var maxX = (frame.offsetWidth * (scale - 1)) / 2 + frame.offsetWidth * 0.25;
-    var maxY = (frame.offsetHeight * (scale - 1)) / 2 + frame.offsetHeight * 0.25;
-    if (scale === 1) { maxX = 0; maxY = 0; }
-    x = Math.max(-maxX, Math.min(maxX, x));
-    y = Math.max(-maxY, Math.min(maxY, y));
+    const { offsetWidth: w, offsetHeight: h } = this.frame;
+    const maxX = this.scale === 1 ? 0 : (w * (this.scale - 1)) / 2 + w * 0.25;
+    const maxY = this.scale === 1 ? 0 : (h * (this.scale - 1)) / 2 + h * 0.25;
+    this.x = Math.max(-maxX, Math.min(maxX, this.x));
+    this.y = Math.max(-maxY, Math.min(maxY, this.y));
+
+    this.frame.style.transition = animate ? "transform .25s cubic-bezier(.2,.7,.2,1)" : "none";
+    this.frame.style.transform = `translate(${this.x}px, ${this.y}px) scale(${this.scale})`;
+    this.level.textContent = `${Math.round(this.scale * 100)}%`;
+    this.stage.classList.toggle("is-zoomed", this.scale > 1);
   }
 
-  function render(animate) {
-    clampPan();
-    frame.style.transition = animate ? "transform .25s cubic-bezier(.2,.7,.2,1)" : "none";
-    frame.style.transform = "translate(" + x + "px," + y + "px) scale(" + scale + ")";
-    levelOut.textContent = Math.round(scale * 100) + "%";
-    stage.classList.toggle("is-zoomed", scale > 1);
-  }
-
-  // zoom toward a point (clientX/clientY), or the centre when omitted
-  function zoomTo(next, cx, cy, animate) {
+  /** Zoom toward a client point, or the centre of the stage. */
+  zoomTo(next, { clientX, clientY, animate = false } = {}) {
     next = Math.max(MIN, Math.min(MAX, next));
-    var rect = stage.getBoundingClientRect();
-    var px = (cx === undefined ? rect.left + rect.width / 2 : cx) - (rect.left + rect.width / 2);
-    var py = (cy === undefined ? rect.top + rect.height / 2 : cy) - (rect.top + rect.height / 2);
-    var ratio = next / scale;
-    x = px - (px - x) * ratio;
-    y = py - (py - y) * ratio;
-    scale = next;
-    render(animate);
+    const box = this.stage.getBoundingClientRect();
+    const cx = box.left + box.width / 2;
+    const cy = box.top + box.height / 2;
+    const px = (clientX ?? cx) - cx;
+    const py = (clientY ?? cy) - cy;
+    const ratio = next / this.scale;
+    this.x = px - (px - this.x) * ratio;
+    this.y = py - (py - this.y) * ratio;
+    this.scale = next;
+    this.render(animate);
   }
 
-  function reset() { scale = 1; x = 0; y = 0; render(true); }
+  zoomBy(factor) { this.zoomTo(this.scale * factor, { animate: true }); }
 
-  // --- wheel & buttons
-  stage.addEventListener("wheel", function (e) {
-    if (puzzling()) return;
-    e.preventDefault();
-    zoomTo(scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY, false);
-  }, { passive: false });
+  reset(animate = true) {
+    Object.assign(this, { scale: 1, x: 0, y: 0 });
+    this.render(animate);
+  }
 
-  document.querySelectorAll("[data-zoom]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      zoomTo(scale * (btn.dataset.zoom === "1" ? 1.4 : 1 / 1.4), undefined, undefined, true);
-    });
-  });
-  document.getElementById("reset").addEventListener("click", reset);
+  setLoupe(on) {
+    this.loupeOn = on;
+    this.loupeBtn.setAttribute("aria-pressed", String(on));
+    this.stage.classList.toggle("has-loupe", on);
+    if (on) this.loupe.style.backgroundImage = `url("${this.img.currentSrc}")`;
+    else this.loupe.classList.remove("is-visible");
+  }
 
-  stage.addEventListener("dblclick", function (e) {
-    if (puzzling()) return;
-    if (scale > 1.05) reset(); else zoomTo(2.5, e.clientX, e.clientY, true);
-  });
-
-  // --- drag to pan (mouse, pen and touch)
-  var drag = null;
-  stage.addEventListener("pointerdown", function (e) {
-    if (puzzling() || loupeOn || scale === 1) return;
-    drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: x, oy: y };
-    stage.setPointerCapture(e.pointerId);
-    stage.classList.add("is-dragging");
-  });
-  stage.addEventListener("pointermove", function (e) {
-    if (drag && e.pointerId === drag.id) {
-      x = drag.ox + (e.clientX - drag.sx);
-      y = drag.oy + (e.clientY - drag.sy);
-      render(false);
-    }
-    if (loupeOn) moveLoupe(e);
-  });
-  function endDrag() { drag = null; stage.classList.remove("is-dragging"); }
-  stage.addEventListener("pointerup", endDrag);
-  stage.addEventListener("pointercancel", endDrag);
-
-  // --- loupe: a magnifying glass over the painting
-  function moveLoupe(e) {
-    var r = img.getBoundingClientRect();
-    var inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-    loupe.classList.toggle("is-visible", inside);
+  #moveLoupe(e) {
+    const r = this.img.getBoundingClientRect();
+    const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    this.loupe.classList.toggle("is-visible", inside);
     if (!inside) return;
-    var s = stage.getBoundingClientRect();
-    var size = loupe.offsetWidth;
-    loupe.style.left = (e.clientX - s.left - size / 2) + "px";
-    loupe.style.top = (e.clientY - s.top - size / 2) + "px";
-    var bw = r.width * LOUPE_ZOOM, bh = r.height * LOUPE_ZOOM;
-    loupe.style.backgroundSize = bw + "px " + bh + "px";
-    loupe.style.backgroundPosition =
-      (-(e.clientX - r.left) * LOUPE_ZOOM + size / 2) + "px " +
-      (-(e.clientY - r.top) * LOUPE_ZOOM + size / 2) + "px";
+    const s = this.stage.getBoundingClientRect();
+    const size = this.loupe.offsetWidth;
+    Object.assign(this.loupe.style, {
+      left: `${e.clientX - s.left - size / 2}px`,
+      top: `${e.clientY - s.top - size / 2}px`,
+      backgroundSize: `${r.width * LOUPE_ZOOM}px ${r.height * LOUPE_ZOOM}px`,
+      backgroundPosition:
+        `${-(e.clientX - r.left) * LOUPE_ZOOM + size / 2}px ${-(e.clientY - r.top) * LOUPE_ZOOM + size / 2}px`,
+    });
   }
-  function setLoupe(on) {
-    loupeOn = on;
-    loupeBtn.setAttribute("aria-pressed", String(on));
-    stage.classList.toggle("has-loupe", on);
-    if (on) loupe.style.backgroundImage = 'url("' + img.currentSrc + '")';
-    else loupe.classList.remove("is-visible");
-  }
-  loupeBtn.addEventListener("click", function () { setLoupe(!loupeOn); });
-  stage.addEventListener("pointerleave", function () { loupe.classList.remove("is-visible"); });
 
-  // --- fullscreen
-  var room = viewer;
-  document.getElementById("fullscreen").addEventListener("click", toggleFullscreen);
-  function toggleFullscreen() {
+  toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen();
-    else if (room.requestFullscreen) room.requestFullscreen().catch(function () {});
+    else this.viewer.requestFullscreen?.().catch(() => {});
   }
-  document.addEventListener("fullscreenchange", function () { setTimeout(function () { render(false); }, 50); });
 
-  // --- missing image (offline / blocked)
-  function showMissing() {
-    img.hidden = true;
-    frame.querySelector(".viewer__missing").hidden = false;
-    frame.classList.add("is-missing");
+  #watchImage() {
+    const missing = () => {
+      this.img.hidden = true;
+      this.frame.querySelector(".viewer__missing").hidden = false;
+      this.frame.classList.add("is-missing");
+    };
+    const ok = () => this.frame.classList.add("is-loaded");
+    if (this.img.complete) (this.img.naturalWidth ? ok : missing)();
+    this.img.addEventListener("load", ok);
+    this.img.addEventListener("error", missing);
   }
-  img.addEventListener("error", showMissing);
-  if (img.complete && img.naturalWidth === 0) showMissing();
-  img.addEventListener("load", function () { frame.classList.add("is-loaded"); });
-  if (img.complete && img.naturalWidth > 0) frame.classList.add("is-loaded");
 
-  // --- keyboard
-  document.addEventListener("keydown", function (e) {
-    if (e.target.matches("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (puzzling()) return;
-    var link;
-    switch (e.key) {
-      case "ArrowLeft": link = document.getElementById("prev"); break;
-      case "ArrowRight": link = document.getElementById("next"); break;
-      case "+": case "=": zoomTo(scale * 1.4, undefined, undefined, true); break;
-      case "-": case "_": zoomTo(scale / 1.4, undefined, undefined, true); break;
-      case "0": reset(); break;
-      case "l": case "L": setLoupe(!loupeOn); break;
-      case "f": case "F": toggleFullscreen(); break;
-      default: return;
+  #bind() {
+    const { stage } = this;
+
+    stage.addEventListener("wheel", (e) => {
+      if (this.puzzling) return;
+      e.preventDefault();
+      this.zoomTo(this.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e);
+    }, { passive: false });
+
+    stage.addEventListener("dblclick", (e) => {
+      if (this.puzzling) return;
+      if (this.scale > 1.05) this.reset();
+      else this.zoomTo(2.5, { clientX: e.clientX, clientY: e.clientY, animate: true });
+    });
+
+    // drag to pan (mouse, pen and touch)
+    stage.addEventListener("pointerdown", (e) => {
+      if (this.puzzling || this.loupeOn || this.scale === 1) return;
+      this.#drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: this.x, oy: this.y };
+      stage.setPointerCapture(e.pointerId);
+      stage.classList.add("is-dragging");
+    });
+    stage.addEventListener("pointermove", (e) => {
+      const drag = this.#drag;
+      if (drag?.id === e.pointerId) {
+        this.x = drag.ox + (e.clientX - drag.sx);
+        this.y = drag.oy + (e.clientY - drag.sy);
+        this.render();
+      }
+      if (this.loupeOn) this.#moveLoupe(e);
+    });
+    const endDrag = () => { this.#drag = null; stage.classList.remove("is-dragging"); };
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+    stage.addEventListener("pointerleave", () => this.loupe.classList.remove("is-visible"));
+
+    for (const btn of document.querySelectorAll("[data-zoom]")) {
+      btn.addEventListener("click", () => this.zoomBy(btn.dataset.zoom === "1" ? 1.4 : 1 / 1.4));
     }
-    if (link) window.location.href = link.href;
-    e.preventDefault();
-  });
+    $("reset").addEventListener("click", () => this.reset());
+    this.loupeBtn.addEventListener("click", () => this.setLoupe(!this.loupeOn));
+    $("fullscreen").addEventListener("click", () => this.toggleFullscreen());
+    document.addEventListener("fullscreenchange", () => setTimeout(() => this.render(), 50));
 
-  // puzzle.js asks for a clean view before it takes over the stage
-  document.addEventListener("puzzle:start", function () {
-    setLoupe(false);
-    scale = 1; x = 0; y = 0;
-    render(false);
-  });
+    // puzzle.js asks for a clean view before it takes over the stage
+    document.addEventListener("puzzle:start", () => {
+      this.setLoupe(false);
+      this.reset(false);
+    });
 
-  render(false);
-})();
+    const keys = {
+      ArrowLeft: () => $("prev")?.click(),
+      ArrowRight: () => $("next")?.click(),
+      "+": () => this.zoomBy(1.4),
+      "=": () => this.zoomBy(1.4),
+      "-": () => this.zoomBy(1 / 1.4),
+      _: () => this.zoomBy(1 / 1.4),
+      0: () => this.reset(),
+      l: () => this.setLoupe(!this.loupeOn),
+      f: () => this.toggleFullscreen(),
+    };
+    document.addEventListener("keydown", (e) => {
+      if (e.target.matches("input, textarea") || e.metaKey || e.ctrlKey || e.altKey || this.puzzling) return;
+      const action = keys[e.key] ?? keys[e.key.toLowerCase()];
+      if (!action) return;
+      e.preventDefault();
+      action();
+    });
+  }
+}
+
+if ($("stage")) new PaintingViewer();

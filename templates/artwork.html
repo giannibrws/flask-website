@@ -16,7 +16,7 @@
     <div class="viewer__stage" id="stage" tabindex="0"
          aria-label="{{ art.title }}. Drag to pan, scroll or use plus and minus to zoom.">
       <div class="viewer__spot" aria-hidden="true"></div>
-      <div class="viewer__frame" id="frame">
+      <div class="viewer__frame" id="frame" style="view-transition-name: art-{{ art.slug }}">
         <img id="painting" src="{{ art.image }}" alt="{{ art.title }} ({{ art.year }}) by Pablo Picasso"
              referrerpolicy="no-referrer" draggable="false">
         <div class="viewer__missing" hidden>
@@ -26,8 +26,14 @@
       </div>
       <div class="loupe" id="loupe" aria-hidden="true"></div>
 
-      <!-- jigsaw puzzle layer, built by puzzle.js -->
-      <svg class="puzzle" id="puzzle" hidden aria-label="Jigsaw puzzle of {{ art.title }}"></svg>
+      <!-- jigsaw puzzle, built by puzzle.js: an SVG board with canvas pieces on top -->
+      <div class="puzzle" id="puzzle" hidden role="application" aria-label="Jigsaw puzzle of {{ art.title }}">
+        <div class="puzzle__area">
+          <svg class="puzzle__board" aria-hidden="true"></svg>
+          <canvas class="puzzle__placed" aria-hidden="true"></canvas>
+          <div class="puzzle__layer"></div>
+        </div>
+      </div>
 
       <div class="solved" id="solved" hidden>
         <div class="solved__card">
@@ -130,6 +136,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/viewer.js') }}"></script>
-<script src="{{ url_for('static', filename='js/puzzle.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/viewer.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/puzzle.js') }}"></script>
 {% endblock %}

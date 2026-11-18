@@ -5,17 +5,56 @@ They are shown from Wikipedia/Wikimedia, which hosts them for educational use;
 every artwork page links back to its source.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
 WIKI = "https://en.wikipedia.org/wiki/"
 UPLOAD = "https://upload.wikimedia.org/wikipedia/en/"
 
-ROOMS = {
-    "early": {"name": "The Young Master", "number": "I", "years": "1896–1901"},
-    "blue": {"name": "Blue Period", "number": "II", "years": "1901–1904"},
-    "rose": {"name": "Rose Period", "number": "III", "years": "1904–1906"},
-    "war": {"name": "War & Grief", "number": "IV", "years": "1937"},
+@dataclass(frozen=True, slots=True)
+class Room:
+    name: str
+    number: str
+    years: str
+
+
+@dataclass(frozen=True, slots=True)
+class Artwork:
+    slug: str
+    title: str
+    original: str
+    year: str
+    room: str
+    medium: str
+    museum: str
+    city: str
+    image: str
+    wiki: str
+    palette: tuple[str, ...]
+    tags: tuple[str, ...]
+    text: str
+    _haystack: str = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # everything search looks at, lower-cased once
+        room = ROOMS[self.room]
+        words = [self.title, self.original, self.year, self.museum, self.city,
+                 self.room, room.name, *self.tags, self.text]
+        object.__setattr__(self, "_haystack", " ".join(words).lower())
+
+    def matches(self, words: list[str]) -> bool:
+        return all(word in self._haystack for word in words)
+
+
+ROOMS: dict[str, Room] = {
+    "early": Room("The Young Master", "I", "1896–1901"),
+    "blue": Room("Blue Period", "II", "1901–1904"),
+    "rose": Room("Rose Period", "III", "1904–1906"),
+    "war": Room("War & Grief", "IV", "1937"),
 }
 
-ARTWORKS = [
+_DATA = [
     {
         "slug": "science-and-charity",
         "title": "Science and Charity",
@@ -189,18 +228,14 @@ ARTWORKS = [
     },
 ]
 
-BY_SLUG = {a["slug"]: a for a in ARTWORKS}
+ARTWORKS: tuple[Artwork, ...] = tuple(
+    Artwork(**{**data, "palette": tuple(data["palette"]), "tags": tuple(data["tags"])})
+    for data in _DATA
+)
+BY_SLUG: dict[str, Artwork] = {art.slug: art for art in ARTWORKS}
 
 
-def search(query):
-    """Return artworks matching every word of the query (title, year, museum, room, tags, text)."""
-    words = [w for w in (query or "").lower().split() if w]
-    if not words:
-        return list(ARTWORKS)
-
-    def haystack(a):
-        room = ROOMS[a["room"]]
-        return " ".join([a["title"], a["original"], a["year"], a["museum"], a["city"],
-                         a["room"], room["name"], " ".join(a["tags"]), a["text"]]).lower()
-
-    return [a for a in ARTWORKS if all(w in haystack(a) for w in words)]
+def search(query: str | None) -> list[Artwork]:
+    """Artworks matching every word of the query (title, year, museum, room, tags, text)."""
+    words = (query or "").lower().split()
+    return [art for art in ARTWORKS if art.matches(words)]

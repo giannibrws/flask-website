@@ -1,405 +1,435 @@
-// Jigsaw puzzles: turn a painting into real interlocking pieces.
-// - On an artwork page: "Start puzzle" breaks the painting apart, you drag the pieces back.
-// - On the home page: a decorative teaser with a few pieces lifted out.
-(function () {
-  "use strict";
+// Jigsaw puzzle game on the artwork page.
+//
+// Performance, so dragging stays smooth even with 36 pieces on slow machines:
+// - every loose piece is its own small <canvas>, pre-rendered once (shadow baked in, no CSS
+//   filters) and moved with translate3d() on its own compositor layer: no repaints at all;
+// - a placed piece is painted onto one shared board canvas and its own layer is removed,
+//   so the GPU has less to juggle the further you get.
+import { gridFor, loaded, makeCut, piecePath, random, svgEl } from "./jigsaw.js";
 
-  var NS = "http://www.w3.org/2000/svg";
-  var CONFETTI = ["#2348a0", "#d6432b", "#e9b23c", "#4d7a3c", "#e7a59a", "#f2e8d5"];
+const CONFETTI = ["#2348a0", "#d6432b", "#e9b23c", "#4d7a3c", "#e7a59a", "#f2e8d5"];
+const SNAP = 0.28;    // snap when within this fraction of a piece
+const KNOB = 0.3;     // room around a piece for its knobs (they stick out ~0.26)
+const SHADOW = 14;    // extra room (board units) for the baked-in drop shadow
 
-  function el(name, attrs, parent) {
-    var node = document.createElementNS(NS, name);
-    for (var k in attrs) node.setAttribute(k, attrs[k]);
-    if (parent) parent.appendChild(node);
-    return node;
-  }
-  function rnd(a, b) { return a + Math.random() * (b - a); }
+const $ = (id) => document.getElementById(id);
+const fmt = (ms) => {
+  const s = Math.floor(ms / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
+const store = {
+  get(key) { try { return Number(localStorage.getItem(key)) || null; } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, String(value)); } catch { /* private mode */ } },
+};
 
-  // ------------------------------------------------------------------ geometry
-  // One edge from p0 to p1. sign: 0 = flat border, +1 = knob sticking out, -1 = hole.
-  function edge(p0, p1, sign, size) {
-    if (!sign) return " L" + p1[0].toFixed(2) + " " + p1[1].toFixed(2);
-    var dx = p1[0] - p0[0], dy = p1[1] - p0[1];
-    var len = Math.sqrt(dx * dx + dy * dy);
-    var ux = dx / len, uy = dy / len;
-    var nx = uy, ny = -ux; // outward normal for a clockwise outline
-    function P(u, v) {
-      return (p0[0] + ux * u * len + nx * v * size * sign).toFixed(2) + " " +
-             (p0[1] + uy * u * len + ny * v * size * sign).toFixed(2);
-    }
-    return " L" + P(0.36, 0) +
-      " C" + P(0.42, 0.03) + " " + P(0.30, 0.25) + " " + P(0.50, 0.26) +
-      " C" + P(0.70, 0.25) + " " + P(0.58, 0.03) + " " + P(0.64, 0) +
-      " L" + P(1, 0);
+class Piece {
+  constructor({ r, c, d, path, canvas, homeX, homeY }) {
+    Object.assign(this, { r, c, d, path, canvas, homeX, homeY });
+    this.x = homeX;
+    this.y = homeY;
+    this.placed = false;
   }
 
-  // A random cut: which way every inner edge's knob points.
-  function makeCut(cols, rows) {
-    var h = [], v = [];
-    for (var r = 0; r < rows; r++) {
-      h.push([]); v.push([]);
-      for (var c = 0; c < cols; c++) {
-        h[r].push(Math.random() < 0.5 ? 1 : -1);
-        v[r].push(Math.random() < 0.5 ? 1 : -1);
+  /** Is this client point on the piece itself (not on a transparent corner)? */
+  hit(clientX, clientY) {
+    const box = this.canvas.getBoundingClientRect();
+    const px = ((clientX - box.left) / box.width) * this.canvas.width;
+    const py = ((clientY - box.top) / box.height) * this.canvas.height;
+    // the canvas keeps its drawing transform, so this tests against the piece outline
+    return this.canvas.getContext("2d").isPointInPath(this.path, px, py);
+  }
+}
+
+class JigsawPuzzle {
+  pieceCount = 9;
+  pieces = [];
+  #timer = 0;
+  #drag = null;
+  #frame = 0;
+  #pending = null;
+  #zTop = 1;
+  #startToken = 0;
+
+  constructor() {
+    this.viewer = $("viewer");
+    this.stage = $("stage");
+    this.img = $("painting");
+    this.root = $("puzzle");
+    this.area = this.root.querySelector(".puzzle__area");
+    this.board = this.root.querySelector(".puzzle__board");
+    this.placedCanvas = this.root.querySelector(".puzzle__placed");
+    this.layer = this.root.querySelector(".puzzle__layer");
+    this.status = $("puzzle-status");
+    this.peekBtn = $("puzzle-peek");
+    this.solvedBox = $("solved");
+    this.slug = location.pathname.split("/").pop();
+
+    this.#bindUi();
+    this.#bindDrag();
+    new ResizeObserver(() => this.#layout()).observe(this.area);
+
+    loaded(this.img)
+      .then(() => this.viewer.hasAttribute("data-autoplay") && this.start())
+      .catch(() => { $("puzzle-start").hidden = true; });
+  }
+
+  get running() { return !this.root.hidden; }
+  get elapsed() { return this.startedAt ? (this.endedAt || Date.now()) - this.startedAt : 0; }
+
+  // ------------------------------------------------------------------ lifecycle
+  async start() {
+    if (!this.img.naturalWidth) return;
+    const token = ++this.#startToken;
+    document.dispatchEvent(new CustomEvent("puzzle:start"));
+
+    this.viewer.classList.add("is-puzzle");
+    this.root.hidden = false;
+    this.root.classList.remove("is-done", "is-flying");
+    this.solvedBox.hidden = true;
+    $("view-tools").hidden = true;
+    $("puzzle-tools").hidden = false;
+    this.#setPeek(false);
+    clearInterval(this.#timer);
+
+    this.#build();
+    this.#updateStatus();
+
+    // show the intact painting for a beat, then break it apart
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    if (token !== this.#startToken) return; // restarted or exited meanwhile
+    this.#scatter(this.pieces.toSorted(() => Math.random() - 0.5));
+    this.startedAt = Date.now();
+    this.endedAt = 0;
+    this.#timer = setInterval(() => this.#updateStatus(), 1000);
+  }
+
+  exit() {
+    this.#startToken++;
+    clearInterval(this.#timer);
+    this.pieces = [];
+    this.layer.replaceChildren();
+    this.board.replaceChildren();
+    this.placedCtx?.clearRect(0, 0, this.AW, this.AH);
+    this.root.hidden = true;
+    this.solvedBox.hidden = true;
+    this.viewer.classList.remove("is-puzzle");
+    $("puzzle-tools").hidden = true;
+    $("view-tools").hidden = false;
+    this.stage.focus({ preventScroll: true });
+  }
+
+  // ------------------------------------------------------------------ building
+  #build() {
+    const { naturalWidth: W0, naturalHeight: H0 } = this.img;
+    const k = 1000 / Math.max(W0, H0); // the board is 1000 units on its long side
+    const W = W0 * k;
+    const H = H0 * k;
+    const [cols, rows] = gridFor(this.pieceCount, W / H);
+    const pw = W / cols;
+    const ph = H / rows;
+
+    // room around the board for loose pieces, stretched to the shape of the stage:
+    // wide screens get space left and right, phones get it above and below
+    const m0 = Math.max(pw, ph) * 1.1;
+    let AW = W + m0 * 2;
+    let AH = H + m0 * 2;
+    const stageAspect = this.root.clientWidth / Math.max(1, this.root.clientHeight);
+    if (AW / AH < stageAspect) AW = AH * stageAspect; else AH = AW / stageAspect;
+
+    Object.assign(this, { W, H, pw, ph, AW, AH, mx: (AW - W) / 2, my: (AH - H) / 2, pad: Math.min(pw, ph) * KNOB + SHADOW });
+    Object.assign(this, { placed: 0, moves: 0, helped: false, startedAt: 0, endedAt: 0 });
+    this.area.style.setProperty("--ar", String(AW / AH));
+    this.scale = this.area.clientWidth / AW || 1;
+
+    const cut = makeCut(cols, rows);
+    const src = this.img;
+
+    // the board: a dashed bed, a ghost copy for peeking, and faint cut lines
+    this.board.setAttribute("viewBox", `0 0 ${AW} ${AH}`);
+    this.board.replaceChildren();
+    const g = svgEl("g", { transform: `translate(${this.mx} ${this.my})` }, this.board);
+    svgEl("rect", { x: -10, y: -10, width: W + 20, height: H + 20, class: "puzzle__bed" }, g);
+    svgEl("image", { href: src.currentSrc || src.src, width: W, height: H, class: "puzzle__ghost", preserveAspectRatio: "none" }, g);
+    const guides = svgEl("g", { class: "puzzle__guides" }, g);
+
+    // pieces: draw each one once into its own canvas
+    // (showing a canvas never needs CORS, and isPointInPath works on any canvas)
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const res = Math.min(src.naturalWidth / W, this.scale * dpr * 1.25); // canvas px per board unit
+    const lineWidth = Math.max(1.2, 1.6 / this.scale);
+    const frag = document.createDocumentFragment();
+    this.pieces = [];
+    this.lineWidth = lineWidth;
+
+    // one shared canvas that placed pieces are painted onto
+    const boardRes = Math.min(src.naturalWidth / W, this.scale * dpr);
+    this.placedCanvas.width = Math.ceil(AW * boardRes);
+    this.placedCanvas.height = Math.ceil(AH * boardRes);
+    this.placedCtx = this.placedCanvas.getContext("2d");
+    this.placedCtx.setTransform(boardRes, 0, 0, boardRes, 0, 0);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const d = piecePath(cut, r, c, pw, ph);
+        svgEl("path", { d, transform: `translate(${c * pw} ${r * ph})` }, guides);
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "piece";
+        canvas.dataset.i = String(this.pieces.length);
+        canvas.width = Math.ceil((pw + this.pad * 2) * res);
+        canvas.height = Math.ceil((ph + this.pad * 2) * res);
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(res, 0, 0, res, this.pad * res, this.pad * res);
+        const path = new Path2D(d);
+        // drop shadow, baked in (shadow sizes are in canvas pixels, not transformed)
+        ctx.save();
+        Object.assign(ctx, { shadowColor: "rgba(0, 0, 0, .5)", shadowBlur: 7 * res, shadowOffsetY: 5 * res, fillStyle: "#000" });
+        ctx.fill(path);
+        ctx.restore();
+        // the painting, cut to shape (covers the black fill)
+        ctx.save();
+        ctx.clip(path);
+        ctx.drawImage(src, -c * pw, -r * ph, W, H);
+        ctx.restore();
+        ctx.lineWidth = lineWidth;
+        ctx.strokeStyle = "rgba(20, 16, 12, .6)";
+        ctx.stroke(path);
+
+        this.pieces.push(new Piece({ r, c, d, path, canvas, homeX: this.mx + c * pw, homeY: this.my + r * ph }));
+        frag.append(canvas);
       }
     }
-    return { cols: cols, rows: rows, h: h, v: v };
+    this.layer.replaceChildren(frag);
+    this.#layout();
   }
 
-  // Outline of piece (r, c) in its own coordinates (0,0)-(pw,ph).
-  function piecePath(cut, r, c, pw, ph) {
-    var size = Math.min(pw, ph);
-    var top = r === 0 ? 0 : -cut.h[r - 1][c];
-    var bottom = r === cut.rows - 1 ? 0 : cut.h[r][c];
-    var left = c === 0 ? 0 : -cut.v[r][c - 1];
-    var right = c === cut.cols - 1 ? 0 : cut.v[r][c];
-    return "M0 0" +
-      edge([0, 0], [pw, 0], top, size) +
-      edge([pw, 0], [pw, ph], right, size) +
-      edge([pw, ph], [0, ph], bottom, size) +
-      edge([0, ph], [0, 0], left, size) + " Z";
+  /** Size and place every canvas for the current on-screen scale. */
+  #layout() {
+    if (!this.pieces.length) return;
+    this.scale = this.area.clientWidth / this.AW;
+    const width = `${(this.pw + this.pad * 2) * this.scale}px`;
+    const height = `${(this.ph + this.pad * 2) * this.scale}px`;
+    for (const p of this.pieces) {
+      Object.assign(p.canvas.style, { width, height });
+      this.#move(p, p.x, p.y);
+    }
   }
 
-  function gridFor(pieces, aspect) {
-    var cols = Math.max(2, Math.round(Math.sqrt(pieces * aspect)));
-    var rows = Math.max(2, Math.round(pieces / cols));
-    return [cols, rows];
+  #move(p, x, y) {
+    p.x = x;
+    p.y = y;
+    const s = this.scale;
+    p.canvas.style.transform = `translate3d(${((x - this.pad) * s).toFixed(1)}px, ${((y - this.pad) * s).toFixed(1)}px, 0)`;
   }
 
-  function whenLoaded(img, ok, fail) {
-    if (img.complete && img.naturalWidth > 0) return ok();
-    if (img.complete && img.naturalWidth === 0) return fail && fail();
-    img.addEventListener("load", ok, { once: true });
-    if (fail) img.addEventListener("error", fail, { once: true });
-  }
-
-  // ------------------------------------------------------------------ home teaser
-  function teaser(holder) {
-    var img = holder.querySelector("img");
-    whenLoaded(img, function () {
-      var W = img.naturalWidth, H = img.naturalHeight;
-      var grid = gridFor(16, W / H), cols = grid[0], rows = grid[1];
-      var pw = W / cols, ph = H / rows;
-      var cut = makeCut(cols, rows);
-      var svg = el("svg", { viewBox: "0 0 " + W + " " + H, class: "teaser", "aria-hidden": "true" });
-      var lines = el("g", { class: "teaser__lines" }, svg);
-      // three pieces, spread out so the holes never touch
-      var lifted = [[1, cols - 2], [rows - 1, 0], [rows - 2, cols - 1]];
-
-      for (var r = 0; r < rows; r++) {
-        for (var c = 0; c < cols; c++) {
-          el("path", { d: piecePath(cut, r, c, pw, ph), transform: "translate(" + c * pw + " " + r * ph + ")" }, lines);
-        }
-      }
-      lifted.forEach(function (rc, i) {
-        var r = rc[0], c = rc[1];
-        var d = piecePath(cut, r, c, pw, ph);
-        var at = "translate(" + c * pw + " " + r * ph + ")";
-        el("path", { d: d, transform: at, class: "teaser__hole" }, svg);
-        var g = el("g", { class: "teaser__piece teaser__piece--" + i }, svg);
-        var inner = el("g", { transform: at }, g);
-        var clip = el("clipPath", { id: "teaser-clip-" + i }, inner);
-        el("path", { d: d }, clip);
-        el("image", { href: img.currentSrc || img.src, x: -c * pw, y: -r * ph, width: W, height: H,
-                      "clip-path": "url(#teaser-clip-" + i + ")", preserveAspectRatio: "none" }, inner);
-        el("path", { d: d, class: "teaser__edge" }, inner);
-      });
-      holder.appendChild(svg);
-      holder.classList.add("is-ready");
-    });
-  }
-  document.querySelectorAll("[data-teaser]").forEach(teaser);
-
-  // ------------------------------------------------------------------ the game
-  var viewer = document.getElementById("viewer");
-  var svg = document.getElementById("puzzle");
-  if (!viewer || !svg) return;
-
-  var stage = document.getElementById("stage");
-  var img = document.getElementById("painting");
-  var viewTools = document.getElementById("view-tools");
-  var puzzleTools = document.getElementById("puzzle-tools");
-  var statusOut = document.getElementById("puzzle-status");
-  var peekBtn = document.getElementById("puzzle-peek");
-  var solvedBox = document.getElementById("solved");
-  var solvedStats = document.getElementById("solved-stats");
-  var startBtn = document.getElementById("puzzle-start");
-  var slug = location.pathname.split("/").pop();
-
-  var game = null;
-  var pieceCount = 9;
-  var timer = null;
-
-  function fmt(ms) {
-    var s = Math.floor(ms / 1000);
-    return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
-  }
-  function elapsed() { return game && game.startedAt ? (game.endedAt || Date.now()) - game.startedAt : 0; }
-
-  function updateStatus() {
-    if (!game) return;
-    statusOut.textContent = game.placed + " / " + game.pieces.length + " pieces · " + fmt(elapsed()) + " · " +
-      game.moves + (game.moves === 1 ? " move" : " moves");
-  }
-
-  function setPos(p, x, y) {
-    p.x = x; p.y = y;
-    p.node.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px)";
-  }
-
-  // pick a spot for a loose piece: around the board, never on its own slot
-  function scatterSpot(p) {
-    var g = game;
-    for (var tries = 0; tries < 30; tries++) {
-      // knobs stick out up to `pad`, so keep that much room from every edge
-      var x = rnd(p.pad, g.AW - g.pw - p.pad);
-      var y = rnd(p.pad, g.AH - g.ph - p.pad);
-      var onBoard = x > g.mx - g.pw * 0.6 && x < g.mx + g.W - g.pw * 0.4 &&
-                    y > g.my - g.ph * 0.6 && y < g.my + g.H - g.ph * 0.4;
-      if (!onBoard || tries > 24) return [x, y];
+  /** A spot for a loose piece: anywhere in the area, but preferably off the board. */
+  #spot() {
+    let x, y;
+    for (let tries = 0; tries < 30; tries++) {
+      x = random(this.pad, this.AW - this.pw - this.pad);
+      y = random(this.pad, this.AH - this.ph - this.pad);
+      const onBoard = x > this.mx - this.pw * 0.6 && x < this.mx + this.W - this.pw * 0.4 &&
+                      y > this.my - this.ph * 0.6 && y < this.my + this.H - this.ph * 0.4;
+      if (!onBoard) break;
     }
     return [x, y];
   }
 
-  function build() {
-    var W0 = img.naturalWidth, H0 = img.naturalHeight;
-    var k = 1000 / Math.max(W0, H0);
-    var W = W0 * k, H = H0 * k;
-    var grid = gridFor(pieceCount, W / H), cols = grid[0], rows = grid[1];
-    var pw = W / cols, ph = H / rows;
-    // room around the board for loose pieces, stretched to the shape of the stage:
-    // wide screens get space left and right, phones get it above and below
-    var m0 = Math.max(pw, ph) * 1.1;
-    var AW = W + m0 * 2, AH = H + m0 * 2;
-    var stageAspect = stage.clientWidth / Math.max(1, stage.clientHeight);
-    if (AW / AH < stageAspect) AW = AH * stageAspect; else AH = AW / stageAspect;
-    var mx = (AW - W) / 2, my = (AH - H) / 2;
-    var cut = makeCut(cols, rows);
-
-    svg.innerHTML = "";
-    svg.setAttribute("viewBox", "0 0 " + AW.toFixed(1) + " " + AH.toFixed(1));
-    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-
-    var board = el("g", { class: "puzzle__board", transform: "translate(" + mx + " " + my + ")" }, svg);
-    el("rect", { x: -10, y: -10, width: W + 20, height: H + 20, class: "puzzle__bed" }, board);
-    el("image", { href: img.currentSrc || img.src, width: W, height: H, class: "puzzle__ghost", preserveAspectRatio: "none" }, board);
-    var guides = el("g", { class: "puzzle__guides" }, board);
-    var layer = el("g", { class: "puzzle__pieces" }, svg);
-
-    var pieces = [];
-    var defs = el("defs", {}, svg);
-    for (var r = 0; r < rows; r++) {
-      for (var c = 0; c < cols; c++) {
-        var d = piecePath(cut, r, c, pw, ph);
-        el("path", { d: d, transform: "translate(" + c * pw + " " + r * ph + ")" }, guides);
-        var id = "pc-" + r + "-" + c;
-        var clip = el("clipPath", { id: id }, defs);
-        el("path", { d: d }, clip);
-        var g = el("g", { class: "piece", "data-i": pieces.length }, layer);
-        el("image", { href: img.currentSrc || img.src, x: -c * pw, y: -r * ph, width: W, height: H,
-                      "clip-path": "url(#" + id + ")", preserveAspectRatio: "none" }, g);
-        el("path", { d: d, class: "piece__edge" }, g);
-        var p = { node: g, r: r, c: c, hx: mx + c * pw, hy: my + r * ph, x: 0, y: 0, pad: Math.min(pw, ph) * 0.26, placed: false };
-        pieces.push(p);
-      }
-    }
-    game = { W: W, H: H, pw: pw, ph: ph, mx: mx, my: my, AW: AW, AH: AH, pieces: pieces, layer: layer,
-             placed: 0, moves: 0, startedAt: 0, endedAt: 0, helped: false };
-    pieces.forEach(function (p) { setPos(p, p.hx, p.hy); });
-  }
-
-  function scatter(list, animate) {
-    svg.classList.toggle("is-flying", !!animate);
-    list.forEach(function (p, i) {
-      p.node.style.transitionDelay = animate ? (i * 18) + "ms" : "0ms";
-      var s = scatterSpot(p);
-      setPos(p, s[0], s[1]);
+  #scatter(list) {
+    this.root.classList.add("is-flying");
+    list.forEach((p, i) => {
+      p.canvas.style.transitionDelay = `${i * 16}ms`;
+      this.#move(p, ...this.#spot());
     });
-    if (animate) setTimeout(function () { svg.classList.remove("is-flying"); }, 900 + list.length * 18);
+    clearTimeout(this.flyTimer);
+    this.flyTimer = setTimeout(() => {
+      this.root.classList.remove("is-flying");
+      for (const p of list) p.canvas.style.transitionDelay = "";
+    }, 800 + list.length * 16);
   }
 
-  function start() {
-    if (!img.naturalWidth) return;
-    document.dispatchEvent(new CustomEvent("puzzle:start"));
-    solvedBox.hidden = true;
-    viewer.classList.add("is-puzzle");
-    svg.removeAttribute("hidden"); // .hidden does not exist on SVG elements
-    viewTools.hidden = true;
-    puzzleTools.hidden = false;
-    setPeek(false);
-    build();
-    updateStatus();
-    // let the intact painting show for a beat, then break it apart
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () {
-        svg.classList.add("is-breaking");
-        setTimeout(function () {
-          svg.classList.remove("is-breaking");
-          scatter(game.pieces.slice().sort(function () { return Math.random() - 0.5; }), true);
-          game.startedAt = Date.now();
-          clearInterval(timer);
-          timer = setInterval(updateStatus, 1000);
-        }, 450);
-      });
-    });
-  }
-
-  function exit() {
-    clearInterval(timer);
-    game = null;
-    viewer.classList.remove("is-puzzle");
-    svg.setAttribute("hidden", "");
-    svg.innerHTML = "";
-    solvedBox.hidden = true;
-    puzzleTools.hidden = true;
-    viewTools.hidden = false;
-    stage.focus({ preventScroll: true });
-  }
-
-  function place(p, animate) {
+  // ------------------------------------------------------------------ playing
+  /** Lock a piece in place; once it has landed, paint it onto the board and drop its layer. */
+  #place(p, settleMs = 160) {
     p.placed = true;
-    p.node.classList.add("is-placed");
-    if (animate) p.node.classList.add("is-snapping");
-    setPos(p, p.hx, p.hy);
-    game.layer.insertBefore(p.node, game.layer.firstChild); // placed pieces sit underneath loose ones
-    game.placed++;
-    if (animate) setTimeout(function () { p.node.classList.remove("is-snapping"); }, 350);
+    p.canvas.classList.add("is-placed");
+    p.canvas.style.zIndex = 0; // placed pieces sit underneath loose ones
+    this.#move(p, p.homeX, p.homeY);
+    this.placed++;
+    setTimeout(() => this.#bake(p), settleMs);
   }
 
-  function setPeek(on) {
-    peekBtn.setAttribute("aria-pressed", String(on));
-    svg.classList.toggle("is-peeking", on);
+  #bake(p) {
+    if (!this.pieces.includes(p) || !p.canvas.isConnected) return; // puzzle restarted meanwhile
+    const ctx = this.placedCtx;
+    const path = new Path2D(p.d);
+    ctx.save();
+    ctx.translate(p.homeX, p.homeY);
+    ctx.save();
+    ctx.clip(path);
+    ctx.drawImage(this.img, -p.c * this.pw, -p.r * this.ph, this.W, this.H);
+    ctx.restore();
+    ctx.lineWidth = this.lineWidth;
+    ctx.strokeStyle = "rgba(20, 16, 12, .2)";
+    ctx.stroke(path);
+    ctx.restore();
+    p.canvas.remove();
   }
 
-  function bestKey() { return "museo-picasso-best:" + slug + ":" + pieceCount; }
+  #finish() {
+    this.endedAt = Date.now();
+    clearInterval(this.#timer);
+    this.#updateStatus();
 
-  function finish() {
-    game.endedAt = Date.now();
-    clearInterval(timer);
-    updateStatus();
-    var time = elapsed();
-    var best = null, record = false;
-    if (!game.helped) {
-      try {
-        best = Number(localStorage.getItem(bestKey())) || null;
-        if (!best || time < best) {
-          localStorage.setItem(bestKey(), String(time));
-          record = !!best;
-          best = record ? time : null; // first solve: nothing to compare with yet
-        }
-      } catch (e) { /* storage unavailable */ }
+    const key = `museo-picasso-best:${this.slug}:${this.pieceCount}`;
+    const time = this.elapsed;
+    const best = store.get(key);
+    let note = "";
+    if (!this.helped) {
+      if (!best || time < best) store.set(key, time);
+      if (best && time < best) note = " New personal best!";
+      else if (best) note = ` Your best: ${fmt(best)}.`;
     }
-    svg.classList.add("is-done");
-    confetti();
-    setTimeout(function () {
-      solvedStats.textContent = game.helped
+
+    this.root.classList.add("is-done");
+    this.#confetti();
+    setTimeout(() => {
+      $("solved-stats").textContent = this.helped
         ? "Solved with a little help. Try it again without the Solve button!"
-        : game.pieces.length + " pieces in " + fmt(time) + " with " + game.moves + " moves." +
-          (record ? " New personal best!" : best ? " Your best: " + fmt(best) + "." : "");
-      solvedBox.hidden = false;
-      document.getElementById("solved-again").focus({ preventScroll: true });
+        : `${this.pieces.length} pieces in ${fmt(time)} with ${this.moves} moves.${note}`;
+      this.solvedBox.hidden = false;
+      $("solved-again").focus({ preventScroll: true });
     }, 1100);
   }
 
-  function confetti() {
-    for (var i = 0; i < 70; i++) {
-      var bit = document.createElement("span");
+  #solveAll() {
+    const loose = this.pieces.filter((p) => !p.placed);
+    if (!loose.length) return;
+    this.helped = true;
+    this.root.classList.add("is-flying");
+    loose.forEach((p, i) => {
+      p.canvas.style.transitionDelay = `${i * 22}ms`;
+      this.#place(p, 800 + i * 22);
+    });
+    setTimeout(() => {
+      this.root.classList.remove("is-flying");
+      this.#finish();
+    }, 650 + loose.length * 22);
+  }
+
+  #setPeek(on) {
+    this.peekBtn.setAttribute("aria-pressed", String(on));
+    this.root.classList.toggle("is-peeking", on);
+  }
+
+  #updateStatus() {
+    this.status.textContent =
+      `${this.placed} / ${this.pieces.length} pieces · ${fmt(this.elapsed)} · ` +
+      `${this.moves} ${this.moves === 1 ? "move" : "moves"}`;
+  }
+
+  #confetti() {
+    const bits = Array.from({ length: 70 }, (_, i) => {
+      const bit = document.createElement("span");
       bit.className = "confetti";
-      bit.style.left = rnd(5, 95) + "%";
-      bit.style.background = CONFETTI[i % CONFETTI.length];
-      bit.style.animationDelay = rnd(0, 0.5) + "s";
-      bit.style.animationDuration = rnd(1.4, 2.4) + "s";
-      bit.style.setProperty("--spin", rnd(-720, 720) + "deg");
-      bit.style.setProperty("--drift", rnd(-80, 80) + "px");
-      stage.appendChild(bit);
-      setTimeout(function (b) { b.remove(); }, 3200, bit);
-    }
-  }
-
-  function solveAll() {
-    if (!game) return;
-    game.helped = true;
-    svg.classList.add("is-flying");
-    game.pieces.forEach(function (p, i) {
-      if (p.placed) return;
-      p.node.style.transitionDelay = (i * 25) + "ms";
-      place(p, false);
+      bit.style.cssText =
+        `left:${random(5, 95)}%;background:${CONFETTI[i % CONFETTI.length]};` +
+        `animation-delay:${random(0, 0.5)}s;animation-duration:${random(1.4, 2.4)}s;` +
+        `--spin:${random(-720, 720)}deg;--drift:${random(-80, 80)}px`;
+      return bit;
     });
-    setTimeout(function () { svg.classList.remove("is-flying"); finish(); }, 700 + game.pieces.length * 25);
+    this.stage.append(...bits);
+    setTimeout(() => bits.forEach((b) => b.remove()), 3200);
   }
 
-  // ---------------------------------------------------------------- dragging
-  function toSvg(e) {
-    var pt = svg.createSVGPoint();
-    pt.x = e.clientX; pt.y = e.clientY;
-    return pt.matrixTransform(svg.getScreenCTM().inverse());
-  }
+  // ------------------------------------------------------------------ input
+  #bindDrag() {
+    this.layer.addEventListener("pointerdown", (e) => {
+      if (this.root.classList.contains("is-flying")) return;
+      // the topmost loose piece whose actual shape is under the pointer
+      const zOf = (p) => Number(p.canvas.style.zIndex) || 0;
+      const piece = this.pieces
+        .filter((p) => !p.placed)
+        .sort((a, b) => zOf(b) - zOf(a))
+        .find((p) => p.hit(e.clientX, e.clientY));
+      if (!piece) return;
 
-  var drag = null;
-  svg.addEventListener("pointerdown", function (e) {
-    var node = e.target.closest(".piece");
-    if (!node || !game || svg.classList.contains("is-flying")) return;
-    var p = game.pieces[Number(node.dataset.i)];
-    if (!p || p.placed) return;
-    e.preventDefault();
-    var pt = toSvg(e);
-    drag = { id: e.pointerId, p: p, dx: pt.x - p.x, dy: pt.y - p.y };
-    game.layer.appendChild(node); // bring to front
-    node.classList.add("is-dragging");
-    svg.setPointerCapture(e.pointerId);
-  });
-  svg.addEventListener("pointermove", function (e) {
-    if (!drag || e.pointerId !== drag.id) return;
-    var pt = toSvg(e), p = drag.p;
-    var x = Math.max(-p.pad, Math.min(game.AW - game.pw + p.pad, pt.x - drag.dx));
-    var y = Math.max(-p.pad, Math.min(game.AH - game.ph + p.pad, pt.y - drag.dy));
-    setPos(p, x, y);
-  });
-  function drop(e) {
-    if (!drag || e.pointerId !== drag.id) return;
-    var p = drag.p;
-    p.node.classList.remove("is-dragging");
-    drag = null;
-    game.moves++;
-    var snap = Math.min(game.pw, game.ph) * 0.28;
-    if (Math.abs(p.x - p.hx) < snap && Math.abs(p.y - p.hy) < snap) {
-      place(p, true);
-      if (game.placed === game.pieces.length) finish();
-    }
-    updateStatus();
-  }
-  svg.addEventListener("pointerup", drop);
-  svg.addEventListener("pointercancel", drop);
-
-  // ---------------------------------------------------------------- buttons & keys
-  startBtn.addEventListener("click", start);
-  document.getElementById("puzzle-exit").addEventListener("click", exit);
-  document.getElementById("puzzle-shuffle").addEventListener("click", function () {
-    if (!game) return;
-    scatter(game.pieces.filter(function (p) { return !p.placed; }), true);
-  });
-  document.getElementById("puzzle-solve").addEventListener("click", solveAll);
-  peekBtn.addEventListener("click", function () { setPeek(peekBtn.getAttribute("aria-pressed") !== "true"); });
-  document.querySelectorAll("[data-pieces]").forEach(function (b) {
-    b.addEventListener("click", function () {
-      pieceCount = Number(b.dataset.pieces);
-      document.querySelectorAll("[data-pieces]").forEach(function (o) { o.setAttribute("aria-checked", String(o === b)); });
-      start();
+      e.preventDefault();
+      const box = this.area.getBoundingClientRect();
+      this.#drag = {
+        id: e.pointerId, piece, box,
+        dx: (e.clientX - box.left) / this.scale - piece.x,
+        dy: (e.clientY - box.top) / this.scale - piece.y,
+      };
+      piece.canvas.style.zIndex = ++this.#zTop;
+      piece.canvas.classList.add("is-dragging");
+      this.layer.setPointerCapture(e.pointerId);
     });
-  });
-  document.getElementById("solved-again").addEventListener("click", start);
-  document.getElementById("solved-close").addEventListener("click", exit);
 
-  document.addEventListener("keydown", function (e) {
-    if (e.target.matches("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (!game && (e.key === "p" || e.key === "P")) { e.preventDefault(); start(); }
-    else if (game && e.key === "Escape") { e.preventDefault(); exit(); }
-  });
+    this.layer.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== this.#drag?.id) return;
+      this.#pending = e;
+      this.#frame ||= requestAnimationFrame(() => this.#applyMove()); // one update per frame
+    });
 
-  // the puzzle needs the image; if it can't load, hide the button
-  whenLoaded(img, function () {
-    if (viewer.hasAttribute("data-autoplay")) start();
-  }, function () {
-    startBtn.hidden = true;
-  });
-})();
+    const drop = (e) => {
+      if (e.pointerId !== this.#drag?.id) return;
+      if (this.#pending) { cancelAnimationFrame(this.#frame); this.#applyMove(); }
+      const { piece } = this.#drag;
+      this.#drag = null;
+      piece.canvas.classList.remove("is-dragging");
+      this.moves++;
+
+      const snap = Math.min(this.pw, this.ph) * SNAP;
+      if (Math.abs(piece.x - piece.homeX) < snap && Math.abs(piece.y - piece.homeY) < snap) {
+        piece.canvas.classList.add("is-snapping");
+        this.#place(piece);
+        setTimeout(() => piece.canvas.classList.remove("is-snapping"), 250);
+        if (this.placed === this.pieces.length) this.#finish();
+      }
+      this.#updateStatus();
+    };
+    this.layer.addEventListener("pointerup", drop);
+    this.layer.addEventListener("pointercancel", drop);
+  }
+
+  #applyMove() {
+    this.#frame = 0;
+    const e = this.#pending;
+    const drag = this.#drag;
+    this.#pending = null;
+    if (!e || !drag) return;
+    const { piece, box } = drag;
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    this.#move(piece,
+      clamp((e.clientX - box.left) / this.scale - drag.dx, -this.pad, this.AW - this.pw + this.pad),
+      clamp((e.clientY - box.top) / this.scale - drag.dy, -this.pad, this.AH - this.ph + this.pad));
+  }
+
+  #bindUi() {
+    $("puzzle-start").addEventListener("click", () => this.start());
+    $("puzzle-exit").addEventListener("click", () => this.exit());
+    $("puzzle-shuffle").addEventListener("click", () => this.#scatter(this.pieces.filter((p) => !p.placed)));
+    $("puzzle-solve").addEventListener("click", () => this.#solveAll());
+    this.peekBtn.addEventListener("click", () => this.#setPeek(this.peekBtn.getAttribute("aria-pressed") !== "true"));
+    $("solved-again").addEventListener("click", () => this.start());
+    $("solved-close").addEventListener("click", () => this.exit());
+
+    const levels = document.querySelectorAll("[data-pieces]");
+    for (const btn of levels) {
+      btn.addEventListener("click", () => {
+        this.pieceCount = Number(btn.dataset.pieces);
+        for (const other of levels) other.setAttribute("aria-checked", String(other === btn));
+        this.start();
+      });
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.target.matches("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!this.running && e.key.toLowerCase() === "p") { e.preventDefault(); this.start(); }
+      else if (this.running && e.key === "Escape") { e.preventDefault(); this.exit(); }
+    });
+  }
+}
+
+if ($("puzzle")) new JigsawPuzzle();
