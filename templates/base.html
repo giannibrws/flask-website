@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Museo Picasso{% endblock %} · Flask-vleugel</title>
+  <meta name="description" content="Een klein, interactief Picasso-museum, gebouwd met Flask.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 30 L16 2 L30 30Z' fill='%232348a0'/%3E%3Cpath d='M16 2 L30 30 H16Z' fill='%23d6432b'/%3E%3Ccircle cx='13' cy='20' r='4' fill='%23e9b23c' stroke='%231c1916' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+
+  <div class="ticker" aria-hidden="true">
+    <div class="ticker__track">
+      {% for _ in range(2) %}
+      <span>Museo Picasso</span><span class="dot">●</span>
+      <span>Nu open: {{ total }} meesterwerken</span><span class="dot">●</span>
+      <span>Atelier: bouw je eigen Middellandse Zee</span><span class="dot">●</span>
+      <span>Seizoen november 2026</span><span class="dot">●</span>
+      <span>Toegang gratis · draait op Flask</span><span class="dot">●</span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <header class="site-header">
+    <a class="brand" href="{{ url_for('home') }}" aria-label="Museo Picasso, naar de ingang">
+      <svg class="brand__mark" viewBox="0 0 48 48" aria-hidden="true">
+        <path d="M4 44 L24 4 L44 44Z" fill="var(--cobalt)"/>
+        <path d="M24 4 L44 44 H24Z" fill="var(--vermilion)"/>
+        <path d="M10 44 L24 18 L30 44Z" fill="var(--ochre)"/>
+        <circle cx="20" cy="30" r="5" fill="var(--paper)" stroke="var(--ink)" stroke-width="2.5"/>
+        <circle cx="20" cy="30" r="1.8" fill="var(--ink)"/>
+        <path d="M4 44 L24 4 L44 44Z" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linejoin="round"/>
+      </svg>
+      <span class="brand__name">Museo <em>Picasso</em></span>
+      <span class="brand__wing">Flask-vleugel</span>
+    </a>
+
+    <nav class="nav" aria-label="Hoofdmenu">
+      <a href="{{ url_for('collection') }}" class="{{ 'is-active' if request.endpoint in ('collection', 'artwork') }}">Collectie</a>
+      <a href="{{ url_for('atelier') }}" class="{{ 'is-active' if request.endpoint == 'atelier' }}">Atelier</a>
+      <a href="{{ url_for('generator') }}" title="Een willekeurig schilderij">Verras me</a>
+    </nav>
+
+    <form class="search" action="{{ url_for('collection') }}" method="get" role="search">
+      <label class="visually-hidden" for="q-header">Zoek in de collectie</label>
+      <input id="q-header" type="search" name="q" placeholder="Zoek: blauw, gitaar, 1905…" value="{{ query if query is defined else '' }}" autocomplete="off">
+      <button type="submit" aria-label="Zoeken">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M15 15 L21 21" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+      </button>
+    </form>
+  </header>
+
+  <main id="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__cols">
+      <div>
+        <p class="eyebrow">Museo Picasso · Flask-vleugel</p>
+        <p>Een klein, eigenwijs huismuseum. Tien schilderijen, vier zalen, één atelier.</p>
+      </div>
+      <div>
+        <p class="eyebrow">Bronnen</p>
+        <p>Afbeeldingen worden getoond via Wikipedia / Wikimedia. Alle werken © Succession Picasso. Niet-commercieel lesproject.</p>
+      </div>
+      <a class="footer-flask" href="https://flask.palletsprojects.com/" target="_blank" rel="noopener">
+        <span class="eyebrow">Gebouwd met</span>
+        <img src="{{ url_for('static', filename='img/flask.png') }}" alt="Flask">
+      </a>
+    </div>
+    <p class="site-footer__fine">Seizoen november 2026 · Gratis toegang · Flash niet toegestaan, Flask wel.</p>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

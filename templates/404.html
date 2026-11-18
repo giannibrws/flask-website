@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Zaal niet gevonden{% endblock %}
+
+{% block content %}
+<section class="empty empty--404">
+  <p class="eyebrow">Fout 404</p>
+  <h1>Deze zaal bestaat niet</h1>
+  <p>Misschien is het werk uitgeleend aan een ander museum. Of de suppoost heeft het verkeerd opgehangen.</p>
+  <div class="empty__actions">
+    <a class="btn" href="{{ url_for('collection') }}">Naar de collectie</a>
+    <a class="btn btn--ghost" href="{{ url_for('generator') }}">Verras me</a>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Atelier{% endblock %}
+{% block body_class %}page-atelier{% endblock %}
+
+{% block content %}
+<section class="atelier-head">
+  <p class="eyebrow">Interactief · Zaal V</p>
+  <h1>Het atelier</h1>
+  <p>Bouw je eigen kubistische dorpje aan de Middellandse Zee. Klik op een onderdeel om het op het doek te zetten,
+     sleep het op zijn plek en geef het met de knoppen een draai, een kleur of een andere maat.
+     Niet tevreden? <em>Verras me</em> bouwt er een voor je.</p>
+</section>
+
+<div class="atelier">
+  <aside class="atelier__drawer" aria-label="Onderdelen">
+    <p class="eyebrow">Onderdelen</p>
+    <div class="parts" id="parts"><!-- filled by atelier.js --></div>
+
+    <p class="eyebrow">Achtergrond</p>
+    <div class="backdrops" id="backdrops" role="radiogroup" aria-label="Achtergrond"><!-- filled by atelier.js --></div>
+  </aside>
+
+  <div class="atelier__easel">
+    <div class="atelier__actions">
+      <button type="button" class="btn btn--small" id="surprise">Verras me</button>
+      <button type="button" class="btn btn--small btn--ghost" id="shake" title="Schud alles een beetje uit het lood">Kubistische schok</button>
+      <button type="button" class="btn btn--small btn--ghost" id="undo" title="Ctrl+Z">Ongedaan maken</button>
+      <button type="button" class="btn btn--small btn--ghost" id="clear">Leeg doek</button>
+      <button type="button" class="btn btn--small btn--ochre" id="download">Download PNG</button>
+    </div>
+
+    <div class="canvas-frame">
+      <svg id="canvas" viewBox="0 0 800 800" role="img" aria-label="Jouw schilderij" tabindex="0"></svg>
+    </div>
+
+    <div class="selection-tools" id="selection-tools" role="toolbar" aria-label="Geselecteerd onderdeel" aria-disabled="true">
+      <span class="selection-tools__name" id="selection-name">Klik een onderdeel op het doek aan</span>
+      <button type="button" data-act="smaller" title="Kleiner ( - )">−</button>
+      <button type="button" data-act="bigger" title="Groter ( + )">+</button>
+      <button type="button" data-act="rotl" title="Draai links ( [ )">↺</button>
+      <button type="button" data-act="rotr" title="Draai rechts ( ] )">↻</button>
+      <button type="button" data-act="flip" title="Spiegel ( M )">⇋</button>
+      <button type="button" data-act="color" title="Andere kleur ( C )">Kleur</button>
+      <button type="button" data-act="front" title="Naar voren">Voor</button>
+      <button type="button" data-act="back" title="Naar achteren">Achter</button>
+      <button type="button" data-act="dupe" title="Dupliceer ( D )">Kopie</button>
+      <button type="button" data-act="delete" class="danger" title="Verwijder ( Delete )">Weg</button>
+    </div>
+
+    <p class="kbd-hint">Pijltjes verschuiven · <kbd>[</kbd> <kbd>]</kbd> draaien · <kbd>+</kbd> <kbd>−</kbd> maat · <kbd>C</kbd> kleur · <kbd>D</kbd> kopie · <kbd>Del</kbd> weg · <kbd>Ctrl</kbd>+<kbd>Z</kbd> terug</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/atelier.js') }}"></script>
+{% endblock %}

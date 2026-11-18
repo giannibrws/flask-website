@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_macros.html" import frame %}
+{% block title %}{{ ('“' ~ query ~ '”') if query else 'Collectie' }}{% endblock %}
+{% block body_class %}page-collection{% endblock %}
+
+{% block content %}
+<section class="collection-head">
+  <p class="eyebrow">
+    {% if query %}Zoekresultaten{% elif room %}{{ rooms[room].years }}{% else %}De hele collectie{% endif %}
+  </p>
+  <h1>
+    {% if query %}“{{ query }}”
+    {% elif room %}{{ rooms[room].name.split(' — ')[1] }}
+    {% else %}Alle werken{% endif %}
+  </h1>
+  <p class="collection-head__count">
+    <strong>{{ results|length }}</strong> van {{ total }} {{ 'werk' if total == 1 else 'werken' }}
+    {% if query and room %}in {{ rooms[room].name.split(' — ')[1]|lower }}{% endif %}
+  </p>
+
+  <form class="search search--big" action="{{ url_for('collection') }}" method="get" role="search">
+    <label class="visually-hidden" for="q-coll">Zoek in de collectie</label>
+    <input id="q-coll" type="search" name="q" value="{{ query }}" placeholder="Zoek op titel, jaar, museum, onderwerp…" autocomplete="off">
+    {% if room %}<input type="hidden" name="zaal" value="{{ room }}">{% endif %}
+    <button type="submit">Zoek <span aria-hidden="true"><span class="arr">→</span></span></button>
+  </form>
+
+  <nav class="chips" aria-label="Filter op zaal">
+    <a class="chip {{ 'is-active' if not room }}" href="{{ url_for('collection', q=query or None) }}">Alle zalen</a>
+    {% for key, r in rooms.items() %}
+      <a class="chip chip--{{ key }} {{ 'is-active' if room == key }}" href="{{ url_for('collection', q=query or None, zaal=key) }}">{{ r.name.split(' — ')[1] }}</a>
+    {% endfor %}
+  </nav>
+</section>
+
+{% if results %}
+  <div class="tour-bar">
+    <p>
+      {% if results|length == 1 %}Eén werk gevonden.{% else %}Bezoek deze {{ results|length }} werken één voor één, met pijltjestoetsen of knoppen.{% endif %}
+    </p>
+    <a class="btn" href="{{ url_for('artwork', slug=results[0].slug, q=query or None, zaal=room or None) }}">
+      {{ 'Bekijk het werk' if results|length == 1 else 'Start rondleiding' }} <span aria-hidden="true"><span class="arr">→</span></span>
+    </a>
+  </div>
+
+  <section class="wall wall--full">
+    <div class="wall__grid">
+      {% for art in results %}{{ frame(art, query, room) }}{% endfor %}
+    </div>
+  </section>
+{% else %}
+  <section class="empty">
+    <svg viewBox="0 0 200 160" aria-hidden="true">
+      <g stroke="#1c1916" stroke-width="5" stroke-linejoin="round">
+        <rect x="20" y="20" width="160" height="120" fill="#f2e8d5"/>
+        <path d="M20 20 L180 140" fill="none"/>
+        <circle cx="70" cy="70" r="18" fill="#e9b23c"/>
+        <path d="M120 40 L160 40 L140 80Z" fill="#2348a0"/>
+      </g>
+    </svg>
+    <h2>Deze zaal is leeg</h2>
+    <p>Niets gevonden voor “{{ query }}”. Probeer een ander woord, bijvoorbeeld
+      {% for word in ['blauw', 'portret', 'circus', '1937'] %}<a href="{{ url_for('collection', q=word) }}">{{ word }}</a>{{ ', ' if not loop.last }}{% endfor %}.
+    </p>
+    <a class="btn" href="{{ url_for('collection') }}">Toon alle werken</a>
+  </section>
+{% endif %}
+{% endblock %}

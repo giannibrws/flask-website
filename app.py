@@ -1,70 +1,102 @@
-from flask import Flask, redirect, url_for, render_template, request
 import random
+from importlib.metadata import version
 
+from flask import Flask, abort, redirect, render_template, request, url_for
 
+from artworks import ARTWORKS, BY_SLUG, ROOMS, search as search_artworks
 
-# Flask constructor takes the name of current module (__name__) as argument.
 app = Flask(__name__)
+FLASK_VERSION = version("flask")
 
-#configure app
-
-#disable caching of static files:
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+# disable caching of static files during development:
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 
-# Define routes for the app:
+@app.context_processor
+def inject_globals():
+    room_counts = {key: sum(a["room"] == key for a in ARTWORKS) for key in ROOMS}
+    return {"rooms": ROOMS, "room_counts": room_counts, "total": len(ARTWORKS),
+            "flask_version": FLASK_VERSION}
 
-# index route supports mmultiple methods:
-@app.route("/" , methods=["POST", "GET"])
+
+@app.route("/")
 def home():
-    if request.method == "POST":
-
-        if 'image' in request.form:
-            return render_template('extra.html')
-
-        searchval = request.form['search']
-        return redirect(url_for("search", keyword=searchval))
-    else:
-        return render_template("index.html")
+    featured = [BY_SLUG[s] for s in ("de-oude-gitarist", "guernica", "jongen-met-pijp", "de-huilende-vrouw")]
+    return render_template("home.html", featured=featured)
 
 
-# Route to search page:
-@app.route("/search/<keyword>", methods=["POST", "GET"])
-def search(keyword):
-    # if using search via search page:
-    if request.method == "POST":
-        keyword = request.form['search']
-
-    return render_template('search.html', key=keyword)
+def filtered(query, room):
+    """Search results, optionally limited to one room."""
+    results = search_artworks(query)
+    if room in ROOMS:
+        results = [a for a in results if a["room"] == room]
+    return results
 
 
-@app.route("/extra", methods=["POST", "GET"])
+@app.route("/collectie")
+def collection():
+    query = request.args.get("q", "").strip()
+    room = request.args.get("zaal", "")
+    room = room if room in ROOMS else ""
+    return render_template("collection.html", results=filtered(query, room), query=query, room=room)
+
+
+# old search urls (and the search form on every page) keep working:
+@app.route("/search/<keyword>")
+@app.route("/search", methods=["GET", "POST"])
+def search(keyword=""):
+    query = request.values.get("search", keyword)
+    return redirect(url_for("collection", q=query))
+
+
+@app.route("/werk/<slug>")
+def artwork(slug):
+    art = BY_SLUG.get(slug)
+    if art is None:
+        abort(404)
+
+    # a "tour" walks through the current search results (and room) in order:
+    query = request.args.get("q", "").strip()
+    room = request.args.get("zaal", "")
+    room = room if room in ROOMS else ""
+    tour = filtered(query, room)
+    if art not in tour:
+        tour, query, room = list(ARTWORKS), "", ""
+    idx = tour.index(art)
+    prev_art = tour[idx - 1] if idx > 0 else None
+    next_art = tour[idx + 1] if idx < len(tour) - 1 else None
+
+    return render_template("artwork.html", art=art, room=ROOMS[art["room"]], query=query,
+                           tour_room=room, position=idx + 1, tour_length=len(tour),
+                           prev_art=prev_art, next_art=next_art)
+
+
+@app.route("/atelier")
+def atelier():
+    return render_template("atelier.html")
+
+
+@app.route("/generator")
+def generator():
+    return redirect(url_for("artwork", slug=random.choice(ARTWORKS)["slug"]))
+
+
+@app.route("/extra")
 def extra():
-    if request.method == "POST":
-        searchval = request.form['search']
-        return redirect(url_for("search", keyword=searchval))
-
-    if(request.args.get("number")):
-        nmbr = request.args.get("number")
-    else:
-        nmbr = 294
-
-    return render_template('extra.html', number=nmbr)
+    return redirect(url_for("atelier"))
 
 
 # redirect user when trying to access admin urls:
-@app.route('/admin')
+@app.route("/admin")
 def admin():
     return redirect(url_for("home"))
 
 
+@app.errorhandler(404)
+def not_found(error):
+    return render_template("404.html"), 404
 
-@app.route('/generator')
-def generator():
-    randomNmbr = random.randint(0, 300)
-    return redirect(url_for("extra", number=randomNmbr))
 
 # execute only if app.py is executed as a script:
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
-
