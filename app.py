@@ -1,8 +1,6 @@
 from flask import Flask, redirect, url_for, render_template, request
-from pprint import pprint
 import random
 
-#use pprint for debugging.
 
 
 # Flask constructor takes the name of current module (__name__) as argument.
@@ -10,14 +8,11 @@ app = Flask(__name__)
 
 #configure app
 
-#disable caching:
-app.config["CACHE_TYPE"] = "null"
+#disable caching of static files:
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 
 # Define routes for the app:
-
-print ("first module name: {}".format(__name__))
 
 # index route supports mmultiple methods:
 @app.route("/" , methods=["POST", "GET"])
