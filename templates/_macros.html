@@ -1,8 +1,8 @@
 {% macro frame(art, query='', room='', size='') -%}
-<a class="frame {{ size }}" href="{{ url_for('artwork', slug=art.slug, q=query or None, zaal=room or None) }}"
+<a class="frame {{ size }}" href="{{ url_for('artwork', slug=art.slug, q=query or None, room=room or None) }}"
    style="--p1: {{ art.palette[0] }}; --p2: {{ art.palette[1] }}; --p3: {{ art.palette[2] }}; --p4: {{ art.palette[3] }};">
   <span class="frame__canvas">
-    <img src="{{ art.image }}" alt="{{ art.title }} ({{ art.year }}) door Pablo Picasso" loading="lazy"
+    <img src="{{ art.image }}" alt="{{ art.title }} ({{ art.year }}) by Pablo Picasso" loading="lazy"
          referrerpolicy="no-referrer" onerror="this.closest('.frame').classList.add('is-missing')">
     <span class="frame__fallback" aria-hidden="true"><span></span><span></span><span></span></span>
   </span>
@@ -14,7 +14,7 @@
 {%- endmacro %}
 
 {% macro palette(art) -%}
-<span class="swatches" aria-label="Kleurenpalet">
+<span class="swatches" aria-label="Colour palette">
   {% for c in art.palette %}<span style="background: {{ c }}" title="{{ c }}"></span>{% endfor %}
 </span>
 {%- endmacro %}

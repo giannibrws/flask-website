@@ -4,55 +4,91 @@
 {% block body_class %}page-artwork{% endblock %}
 
 {% block content %}
-<nav class="crumbs" aria-label="Kruimelpad">
-  <a href="{{ url_for('collection', q=query or None, zaal=tour_room or None) }}">
-    <span class="arr">←</span> {% if query %}Terug naar “{{ query }}”{% elif tour_room %}Terug naar {{ rooms[tour_room].name.split(' — ')[1]|lower }}{% else %}Collectie{% endif %}
+<nav class="crumbs" aria-label="Breadcrumb">
+  <a href="{{ url_for('collection', q=query or None, room=tour_room or None) }}">
+    <span class="arr">←</span> {% if query %}Back to “{{ query }}”{% elif tour_room %}Back to {{ rooms[tour_room].name }}{% else %}Collection{% endif %}
   </a>
-  <span>{{ room.name }}</span>
+  <span>Room {{ room.number }} · {{ room.name }}</span>
 </nav>
 
 <div class="gallery-room" style="--p1: {{ art.palette[0] }}; --p2: {{ art.palette[1] }}; --p3: {{ art.palette[2] }}; --p4: {{ art.palette[3] }};">
-  <section class="viewer" aria-label="Schilderij bekijken">
+  <section class="viewer" id="viewer" aria-label="View the painting" {% if autoplay %}data-autoplay{% endif %}>
     <div class="viewer__stage" id="stage" tabindex="0"
-         aria-label="{{ art.title }}. Sleep om te verschuiven, scroll of gebruik plus en min om te zoomen.">
+         aria-label="{{ art.title }}. Drag to pan, scroll or use plus and minus to zoom.">
       <div class="viewer__spot" aria-hidden="true"></div>
       <div class="viewer__frame" id="frame">
-        <img id="painting" src="{{ art.image }}" alt="{{ art.title }} ({{ art.year }}) door Pablo Picasso"
+        <img id="painting" src="{{ art.image }}" alt="{{ art.title }} ({{ art.year }}) by Pablo Picasso"
              referrerpolicy="no-referrer" draggable="false">
         <div class="viewer__missing" hidden>
           <span class="frame__fallback"><span></span><span></span><span></span></span>
-          <p>Het schilderij is even in restauratie.<br><a href="{{ art.wiki }}" target="_blank" rel="noopener">Bekijk het op Wikipedia <span class="arr">→</span></a></p>
+          <p>This painting is away for restoration.<br><a href="{{ art.wiki }}" target="_blank" rel="noopener">See it on Wikipedia <span class="arr">→</span></a></p>
         </div>
       </div>
       <div class="loupe" id="loupe" aria-hidden="true"></div>
+
+      <!-- jigsaw puzzle layer, built by puzzle.js -->
+      <svg class="puzzle" id="puzzle" hidden aria-label="Jigsaw puzzle of {{ art.title }}"></svg>
+
+      <div class="solved" id="solved" hidden>
+        <div class="solved__card">
+          <p class="eyebrow">Puzzle complete</p>
+          <h2>Bravo!</h2>
+          <p class="solved__stats" id="solved-stats"></p>
+          <div class="solved__actions">
+            <button type="button" class="btn" id="solved-again">Play again</button>
+            {% if next_art %}
+              <a class="btn btn--ghost" href="{{ url_for('artwork', slug=next_art.slug, q=query or None, room=tour_room or None, play=1) }}">Next painting <span class="arr">→</span></a>
+            {% else %}
+              <a class="btn btn--ghost" href="{{ url_for('generator', play=1) }}">Random puzzle <span class="arr">→</span></a>
+            {% endif %}
+            <button type="button" class="btn btn--ghost" id="solved-close">Admire it</button>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div class="viewer__tools" role="toolbar" aria-label="Kijkhulpmiddelen">
-      <button type="button" data-zoom="-1" aria-label="Uitzoomen">−</button>
+    <!-- view mode -->
+    <div class="viewer__tools" id="view-tools" role="toolbar" aria-label="Viewing tools">
+      <button type="button" data-zoom="-1" aria-label="Zoom out">−</button>
       <output id="zoom-level" aria-live="polite">100%</output>
-      <button type="button" data-zoom="1" aria-label="Inzoomen">+</button>
-      <button type="button" id="reset" title="Toets 0">Passend</button>
-      <button type="button" id="loupe-toggle" aria-pressed="false" title="Toets L">Loep</button>
-      <button type="button" id="fullscreen" title="Toets F">Volledig scherm</button>
+      <button type="button" data-zoom="1" aria-label="Zoom in">+</button>
+      <button type="button" id="reset" title="Key 0">Fit</button>
+      <button type="button" id="loupe-toggle" aria-pressed="false" title="Key L">Loupe</button>
+      <button type="button" id="fullscreen" title="Key F">Fullscreen</button>
+      <button type="button" class="tool--primary" id="puzzle-start" title="Key P">Start puzzle</button>
+    </div>
+
+    <!-- puzzle mode -->
+    <div class="viewer__tools viewer__tools--puzzle" id="puzzle-tools" role="toolbar" aria-label="Puzzle tools" hidden>
+      <div class="segmented" role="radiogroup" aria-label="Difficulty">
+        <button type="button" role="radio" data-pieces="9" aria-checked="true">Easy</button>
+        <button type="button" role="radio" data-pieces="16" aria-checked="false">Medium</button>
+        <button type="button" role="radio" data-pieces="36" aria-checked="false">Hard</button>
+      </div>
+      <output class="puzzle-status" id="puzzle-status" aria-live="polite"></output>
+      <button type="button" id="puzzle-peek" aria-pressed="false" title="Show a faint copy of the painting">Peek</button>
+      <button type="button" id="puzzle-shuffle">Shuffle</button>
+      <button type="button" id="puzzle-solve">Solve</button>
+      <button type="button" class="tool--primary" id="puzzle-exit">Exit puzzle</button>
     </div>
   </section>
 
   <aside class="wall-label">
-    <p class="wall-label__room">{{ room.name }}</p>
+    <p class="wall-label__room">Room {{ room.number }} · {{ room.name }}</p>
     <h1>{{ art.title }}</h1>
     {% if art.original != art.title %}<p class="wall-label__original">{{ art.original }}</p>{% endif %}
     <p class="wall-label__artist">Pablo Picasso <span>(1881–1973)</span></p>
 
     <dl class="placard">
-      <div><dt>Jaar</dt><dd>{{ art.year }}</dd></div>
-      <div><dt>Techniek</dt><dd>{{ art.medium }}</dd></div>
-      <div><dt>Collectie</dt><dd>{{ art.museum }}{% if art.city %}, {{ art.city }}{% endif %}</dd></div>
+      <div><dt>Year</dt><dd>{{ art.year }}</dd></div>
+      <div><dt>Medium</dt><dd>{{ art.medium }}</dd></div>
+      <div><dt>Collection</dt><dd>{{ art.museum }}{% if art.city %}, {{ art.city }}{% endif %}</dd></div>
     </dl>
 
     <p class="wall-label__text">{{ art.text }}</p>
 
     <div class="wall-label__palette">
-      <p class="eyebrow">Palet</p>
+      <p class="eyebrow">Palette</p>
       {{ palette(art) }}
     </div>
 
@@ -61,38 +97,39 @@
     </p>
 
     <p class="wall-label__source">
-      Afbeelding: <a href="{{ art.wiki }}" target="_blank" rel="noopener">Wikipedia</a> · © Succession Picasso
+      Image: <a href="{{ art.wiki }}" target="_blank" rel="noopener">Wikipedia</a> · © Succession Picasso
     </p>
   </aside>
 </div>
 
-<nav class="tour" aria-label="Rondleiding">
+<nav class="tour" aria-label="Tour">
   {% if prev_art %}
-    <a class="tour__step tour__step--prev" id="prev" href="{{ url_for('artwork', slug=prev_art.slug, q=query or None, zaal=tour_room or None) }}">
-      <span class="tour__dir"><span class="arr">←</span> Vorige</span>
+    <a class="tour__step tour__step--prev" id="prev" href="{{ url_for('artwork', slug=prev_art.slug, q=query or None, room=tour_room or None) }}">
+      <span class="tour__dir"><span class="arr">←</span> Previous</span>
       <span class="tour__title">{{ prev_art.title }}</span>
     </a>
   {% else %}<span class="tour__step tour__step--empty"></span>{% endif %}
 
   <p class="tour__pos"><strong>{{ position }}</strong> / {{ tour_length }}
-    <span>{% if query %}“{{ query }}”{% elif tour_room %}{{ rooms[tour_room].name.split(' — ')[1] }}{% else %}rondleiding{% endif %}</span>
+    <span>{% if query %}“{{ query }}”{% elif tour_room %}{{ rooms[tour_room].name }}{% else %}tour{% endif %}</span>
   </p>
 
   {% if next_art %}
-    <a class="tour__step tour__step--next" id="next" href="{{ url_for('artwork', slug=next_art.slug, q=query or None, zaal=tour_room or None) }}">
-      <span class="tour__dir">Volgende <span class="arr">→</span></span>
+    <a class="tour__step tour__step--next" id="next" href="{{ url_for('artwork', slug=next_art.slug, q=query or None, room=tour_room or None) }}">
+      <span class="tour__dir">Next <span class="arr">→</span></span>
       <span class="tour__title">{{ next_art.title }}</span>
     </a>
   {% else %}
-    <a class="tour__step tour__step--next tour__step--end" href="{{ url_for('atelier') }}">
-      <span class="tour__dir">Einde rondleiding <span class="arr">→</span></span>
-      <span class="tour__title">Naar het atelier</span>
+    <a class="tour__step tour__step--next tour__step--end" href="{{ url_for('collection') }}">
+      <span class="tour__dir">End of tour <span class="arr">→</span></span>
+      <span class="tour__title">Back to the collection</span>
     </a>
   {% endif %}
 </nav>
-<p class="kbd-hint">Toetsen: <kbd><span class="arr">←</span></kbd> <kbd><span class="arr">→</span></kbd> rondleiding · <kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>0</kbd> passend · <kbd>L</kbd> loep · <kbd>F</kbd> volledig scherm</p>
+<p class="kbd-hint">Keys: <kbd><span class="arr">←</span></kbd> <kbd><span class="arr">→</span></kbd> tour · <kbd>+</kbd> <kbd>−</kbd> zoom · <kbd>0</kbd> fit · <kbd>L</kbd> loupe · <kbd>F</kbd> fullscreen · <kbd>P</kbd> puzzle</p>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/viewer.js') }}"></script>
+<script src="{{ url_for('static', filename='js/puzzle.js') }}"></script>
 {% endblock %}

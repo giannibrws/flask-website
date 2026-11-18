@@ -10,7 +10,11 @@
   var levelOut = document.getElementById("zoom-level");
   if (!stage || !frame || !img) return;
 
+  var viewer = document.getElementById("viewer");
   var MIN = 1, MAX = 6, LOUPE_ZOOM = 3;
+
+  // while a jigsaw puzzle is running, the viewer stays out of the way
+  function puzzling() { return viewer.classList.contains("is-puzzle"); }
   var scale = 1, x = 0, y = 0;
   var loupeOn = false;
 
@@ -48,6 +52,7 @@
 
   // --- wheel & buttons
   stage.addEventListener("wheel", function (e) {
+    if (puzzling()) return;
     e.preventDefault();
     zoomTo(scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY, false);
   }, { passive: false });
@@ -60,13 +65,14 @@
   document.getElementById("reset").addEventListener("click", reset);
 
   stage.addEventListener("dblclick", function (e) {
+    if (puzzling()) return;
     if (scale > 1.05) reset(); else zoomTo(2.5, e.clientX, e.clientY, true);
   });
 
   // --- drag to pan (mouse, pen and touch)
   var drag = null;
   stage.addEventListener("pointerdown", function (e) {
-    if (loupeOn || scale === 1) return;
+    if (puzzling() || loupeOn || scale === 1) return;
     drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: x, oy: y };
     stage.setPointerCapture(e.pointerId);
     stage.classList.add("is-dragging");
@@ -110,7 +116,7 @@
   stage.addEventListener("pointerleave", function () { loupe.classList.remove("is-visible"); });
 
   // --- fullscreen
-  var room = document.querySelector(".viewer");
+  var room = viewer;
   document.getElementById("fullscreen").addEventListener("click", toggleFullscreen);
   function toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen();
@@ -132,6 +138,7 @@
   // --- keyboard
   document.addEventListener("keydown", function (e) {
     if (e.target.matches("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (puzzling()) return;
     var link;
     switch (e.key) {
       case "ArrowLeft": link = document.getElementById("prev"); break;
@@ -145,6 +152,13 @@
     }
     if (link) window.location.href = link.href;
     e.preventDefault();
+  });
+
+  // puzzle.js asks for a clean view before it takes over the stage
+  document.addEventListener("puzzle:start", function () {
+    setLoupe(false);
+    scale = 1; x = 0; y = 0;
+    render(false);
   });
 
   render(false);

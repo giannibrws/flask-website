@@ -1,12 +1,10 @@
 import random
-from importlib.metadata import version
 
 from flask import Flask, abort, redirect, render_template, request, url_for
 
 from artworks import ARTWORKS, BY_SLUG, ROOMS, search as search_artworks
 
 app = Flask(__name__)
-FLASK_VERSION = version("flask")
 
 # disable caching of static files during development:
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -15,14 +13,7 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 @app.context_processor
 def inject_globals():
     room_counts = {key: sum(a["room"] == key for a in ARTWORKS) for key in ROOMS}
-    return {"rooms": ROOMS, "room_counts": room_counts, "total": len(ARTWORKS),
-            "flask_version": FLASK_VERSION}
-
-
-@app.route("/")
-def home():
-    featured = [BY_SLUG[s] for s in ("de-oude-gitarist", "guernica", "jongen-met-pijp", "de-huilende-vrouw")]
-    return render_template("home.html", featured=featured)
+    return {"rooms": ROOMS, "room_counts": room_counts, "total": len(ARTWORKS)}
 
 
 def filtered(query, room):
@@ -33,15 +24,21 @@ def filtered(query, room):
     return results
 
 
-@app.route("/collectie")
+@app.route("/")
+def home():
+    featured = [BY_SLUG[s] for s in ("the-old-guitarist", "guernica", "boy-with-a-pipe", "the-weeping-woman")]
+    return render_template("home.html", featured=featured, hero=BY_SLUG["boy-with-a-pipe"])
+
+
+@app.route("/collection")
 def collection():
     query = request.args.get("q", "").strip()
-    room = request.args.get("zaal", "")
+    room = request.args.get("room", "")
     room = room if room in ROOMS else ""
     return render_template("collection.html", results=filtered(query, room), query=query, room=room)
 
 
-# old search urls (and the search form on every page) keep working:
+# old search urls (and plain form posts) keep working:
 @app.route("/search/<keyword>")
 @app.route("/search", methods=["GET", "POST"])
 def search(keyword=""):
@@ -49,7 +46,7 @@ def search(keyword=""):
     return redirect(url_for("collection", q=query))
 
 
-@app.route("/werk/<slug>")
+@app.route("/art/<slug>")
 def artwork(slug):
     art = BY_SLUG.get(slug)
     if art is None:
@@ -57,7 +54,7 @@ def artwork(slug):
 
     # a "tour" walks through the current search results (and room) in order:
     query = request.args.get("q", "").strip()
-    room = request.args.get("zaal", "")
+    room = request.args.get("room", "")
     room = room if room in ROOMS else ""
     tour = filtered(query, room)
     if art not in tour:
@@ -68,22 +65,22 @@ def artwork(slug):
 
     return render_template("artwork.html", art=art, room=ROOMS[art["room"]], query=query,
                            tour_room=room, position=idx + 1, tour_length=len(tour),
-                           prev_art=prev_art, next_art=next_art)
+                           prev_art=prev_art, next_art=next_art,
+                           autoplay=request.args.get("play") == "1")
 
 
-@app.route("/atelier")
-def atelier():
-    return render_template("atelier.html")
-
-
+@app.route("/random")
 @app.route("/generator")
 def generator():
-    return redirect(url_for("artwork", slug=random.choice(ARTWORKS)["slug"]))
+    play = "1" if request.args.get("play") == "1" else None
+    return redirect(url_for("artwork", slug=random.choice(ARTWORKS)["slug"], play=play))
 
 
+# retired pages:
 @app.route("/extra")
-def extra():
-    return redirect(url_for("atelier"))
+@app.route("/atelier")
+def retired():
+    return redirect(url_for("collection"))
 
 
 # redirect user when trying to access admin urls:
